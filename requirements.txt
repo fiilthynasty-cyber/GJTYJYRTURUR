@@ -1,0 +1,11 @@
+flask
+gunicorn
+requests
+beautifulsoup4
+supabase
+python-dotenv
+openai
+pydantic
+httpx
+aiohttp
+flask-cors
