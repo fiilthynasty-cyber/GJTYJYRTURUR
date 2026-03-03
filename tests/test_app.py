@@ -117,6 +117,45 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(payload["status"], "error")
 
+    @patch("app.fetch_indiehackers_rss")
+    @patch("app.fetch_hn")
+    @patch("app.fetch_reddit")
+    def test_subscriber_engine_autonomous_rounds(self, mock_reddit, mock_hn, mock_ih):
+        mock_reddit.return_value = [{
+            "title": "How do I grow newsletter subscribers quickly?",
+            "url": "https://reddit.com/subs",
+            "deep_link": "https://reddit.com/subs",
+            "snippet": "Need help converting to email list and subscribers",
+            "source": "reddit",
+            "created_at_iso": "2025-01-01T00:00:00+00:00",
+            "meta": {"author": "founder1"},
+        }]
+        mock_hn.return_value = []
+        mock_ih.return_value = []
+
+        response = self.client.post(
+            "/api/subscriberEngine",
+            json={"keywords": ["newsletter"], "rounds": 2, "max_queries": 1, "min_score": 1, "limit": 5},
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["engine"], "autonomous_subscriber_engine")
+        self.assertEqual(payload["rounds"], 2)
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertIn("telemetry", payload)
+        self.assertEqual(len(payload["telemetry"]["rounds"]), 2)
+        self.assertIn("subscriber_fit_score", payload["leads"][0])
+        self.assertIn("subscriber_signals", payload["leads"][0])
+
+    def test_subscriber_engine_requires_keywords(self):
+        response = self.client.post("/api/subscriberEngine", json={"keywords": []})
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(payload["status"], "error")
+
     def test_analyze_route(self):
         response = self.client.post("/api/analyzeLead")
         payload = response.get_json()
