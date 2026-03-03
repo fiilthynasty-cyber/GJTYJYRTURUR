@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+
+from logic.query_builder import CompanyProfile, build_queries
+from logic.scoring import score_lead
+from logic.sources import fetch_hn, fetch_indiehackers_rss, fetch_reddit
 
 DEFAULT_LEAD = {
     "id": 1,
@@ -21,21 +26,23 @@ DEFAULT_ANALYSIS = {
     "reason": "Contains buying signals",
 }
 
+DEFAULT_LEAD_KEYWORDS = [
+    "saas",
+    "automation",
+    "sales",
+    "lead generation",
+]
 
 
 def _success(payload: dict[str, Any], status_code: int = 200):
-    """Return a standard success response envelope."""
     return jsonify({"status": "success", **payload}), status_code
 
 
-
 def _error(message: str, status_code: int = 400):
-    """Return a standard error response envelope."""
     return jsonify({"status": "error", "message": message}), status_code
 
 
-
-def _parse_limit(raw_limit: Any) -> int | None:
+def _parse_limit(raw_limit: Any, *, max_value: int = 100) -> int | None:
     if raw_limit is None:
         return None
     try:
@@ -44,12 +51,118 @@ def _parse_limit(raw_limit: Any) -> int | None:
         return None
     if limit < 1:
         return None
-    return min(limit, 100)
+    return min(limit, max_value)
 
+
+def _normalize_keywords(raw_keywords: Any) -> list[str]:
+    if raw_keywords is None:
+        return DEFAULT_LEAD_KEYWORDS
+    if not isinstance(raw_keywords, list):
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_keywords:
+        if not isinstance(item, str):
+            continue
+        kw = " ".join(item.strip().split())
+        if not kw:
+            continue
+        key = kw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(kw)
+    return out
+
+
+def _bucket_intent(score: int) -> str:
+    if score >= 75:
+        return "high"
+    if score >= 50:
+        return "medium"
+    return "low"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def generate_ranked_leads(
+    *,
+    keywords: list[str],
+    per_source_limit: int,
+    max_queries: int,
+    min_score: int,
+) -> tuple[list[dict[str, Any]], dict[str, int], list[str]]:
+    company = CompanyProfile(url="https://fiilthy.ai", keywords=tuple(keywords))
+    queries = build_queries(company, max_queries=max_queries)
+
+    source_counts = {"reddit": 0, "hn": 0, "indiehackers": 0}
+    errors: list[str] = []
+    deduped: dict[str, dict[str, Any]] = {}
+
+    for query in queries:
+        try:
+            reddit_items = fetch_reddit(query, limit=per_source_limit)
+            source_counts["reddit"] += len(reddit_items)
+            for item in reddit_items:
+                deduped[item["url"]] = item
+        except Exception as exc:
+            errors.append(f"reddit:{query}:{exc}")
+
+        try:
+            hn_items = fetch_hn(query, limit=per_source_limit)
+            source_counts["hn"] += len(hn_items)
+            for item in hn_items:
+                deduped[item["url"]] = item
+        except Exception as exc:
+            errors.append(f"hn:{query}:{exc}")
+
+    try:
+        ih_items = fetch_indiehackers_rss(keywords, limit=per_source_limit * 2)
+        source_counts["indiehackers"] += len(ih_items)
+        for item in ih_items:
+            deduped[item["url"]] = item
+    except Exception as exc:
+        errors.append(f"indiehackers:{exc}")
+
+    ranked: list[dict[str, Any]] = []
+
+    for item in deduped.values():
+        title = item.get("title") or ""
+        content = item.get("snippet") or ""
+        source = item.get("source") or ""
+        created_at = item.get("created_at_iso")
+
+        score, _, reasons = score_lead(
+            title=title,
+            content=content,
+            url=item.get("url") or "",
+            source=source,
+            created_at_iso=created_at,
+            meta=item.get("meta") or {},
+        )
+
+        if score < min_score:
+            continue
+
+        ranked.append({
+            "title": title,
+            "url": item.get("deep_link") or item.get("url"),
+            "source": source,
+            "summary": content,
+            "score": score,
+            "intent": _bucket_intent(score),
+            "reasons": reasons,
+            "captured_at": _now_iso(),
+        })
+
+    ranked.sort(key=lambda row: row["score"], reverse=True)
+    return ranked, source_counts, errors
 
 
 def create_app() -> Flask:
-    """Create and configure the Flask application."""
     app = Flask(__name__)
     CORS(app)
 
@@ -63,7 +176,6 @@ def create_app() -> Flask:
 
     @app.route("/api/getLeads", methods=["GET", "POST"])
     def get_leads():
-        """Return stub lead records; supports optional `limit` for quick local filtering."""
         payload = request.get_json(silent=True) if request.method == "POST" else None
         limit = _parse_limit((payload or {}).get("limit"))
 
@@ -72,6 +184,33 @@ def create_app() -> Flask:
 
         leads = [deepcopy(DEFAULT_LEAD) for _ in range(limit or 1)]
         return _success({"leads": leads, "count": len(leads)})
+
+    @app.post("/api/generateLeads")
+    def generate_leads():
+        payload = request.get_json(silent=True) or {}
+        keywords = _normalize_keywords(payload.get("keywords"))
+
+        if not keywords:
+            return _error("`keywords` must be a non-empty string array.")
+
+        per_source_limit = _parse_limit(payload.get("per_source_limit"), max_value=25) or 5
+        max_queries = _parse_limit(payload.get("max_queries"), max_value=50) or 8
+        min_score = _parse_limit(payload.get("min_score"), max_value=100) or 55
+
+        leads, source_counts, errors = generate_ranked_leads(
+            keywords=keywords,
+            per_source_limit=per_source_limit,
+            max_queries=max_queries,
+            min_score=min_score,
+        )
+
+        return _success({
+            "keywords": keywords,
+            "count": len(leads),
+            "source_counts": source_counts,
+            "errors": errors[:20],
+            "leads": leads[:100],
+        })
 
     @app.post("/api/analyzeLead")
     def analyze_lead():

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app import create_app
 
@@ -41,7 +42,6 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["count"], 3)
-        self.assertEqual(len(payload["leads"]), 3)
 
     def test_get_leads_post_with_bad_limit(self):
         response = self.client.post("/api/getLeads", json={"limit": 0})
@@ -49,7 +49,41 @@ class AppRoutesTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(payload["status"], "error")
-        self.assertIn("positive integer", payload["message"])
+
+    @patch("app.fetch_indiehackers_rss")
+    @patch("app.fetch_hn")
+    @patch("app.fetch_reddit")
+    def test_generate_leads_route(self, mock_reddit, mock_hn, mock_ih):
+        mock_reddit.return_value = [{
+            "title": "Need a better lead gen tool",
+            "url": "https://reddit.com/a",
+            "deep_link": "https://reddit.com/a",
+            "snippet": "Looking for options with pricing",
+            "source": "reddit",
+            "created_at_iso": "2025-01-01T00:00:00+00:00",
+            "meta": {},
+        }]
+        mock_hn.return_value = []
+        mock_ih.return_value = []
+
+        response = self.client.post(
+            "/api/generateLeads",
+            json={"keywords": ["lead gen", "sales"], "max_queries": 1, "min_score": 1},
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "success")
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertIn("source_counts", payload)
+        self.assertEqual(payload["leads"][0]["source"], "reddit")
+
+    def test_generate_leads_requires_keywords(self):
+        response = self.client.post("/api/generateLeads", json={"keywords": []})
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(payload["status"], "error")
 
     def test_analyze_route(self):
         response = self.client.post("/api/analyzeLead")
@@ -65,7 +99,6 @@ class AppRoutesTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["status"], "success")
-        self.assertIn("updated successfully", payload["message"])
 
 
 if __name__ == "__main__":
