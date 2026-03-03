@@ -57,6 +57,10 @@ def _parse_limit(raw_limit: Any, *, max_value: int = 100) -> int | None:
 def _normalize_keywords(raw_keywords: Any) -> list[str]:
     if raw_keywords is None:
         return DEFAULT_LEAD_KEYWORDS
+
+    if isinstance(raw_keywords, str):
+        raw_keywords = [piece.strip() for piece in raw_keywords.split(",")]
+
     if not isinstance(raw_keywords, list):
         return []
 
@@ -86,6 +90,22 @@ def _bucket_intent(score: int) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _lead_payload_from_source(item: dict[str, Any], *, score: int, reasons: dict[str, Any]) -> dict[str, Any]:
+    direct_post_url = item.get("deep_link") or item.get("url") or ""
+    return {
+        "title": item.get("title") or "",
+        "post_url": direct_post_url,
+        "external_url": item.get("url") or direct_post_url,
+        "source": item.get("source") or "",
+        "author": (item.get("meta") or {}).get("author") or "",
+        "summary": item.get("snippet") or "",
+        "score": score,
+        "intent": _bucket_intent(score),
+        "reasons": reasons,
+        "captured_at": _now_iso(),
+    }
 
 
 def generate_ranked_leads(
@@ -130,36 +150,51 @@ def generate_ranked_leads(
     ranked: list[dict[str, Any]] = []
 
     for item in deduped.values():
-        title = item.get("title") or ""
-        content = item.get("snippet") or ""
-        source = item.get("source") or ""
-        created_at = item.get("created_at_iso")
-
         score, _, reasons = score_lead(
-            title=title,
-            content=content,
+            title=item.get("title") or "",
+            content=item.get("snippet") or "",
             url=item.get("url") or "",
-            source=source,
-            created_at_iso=created_at,
+            source=item.get("source") or "",
+            created_at_iso=item.get("created_at_iso"),
             meta=item.get("meta") or {},
         )
 
         if score < min_score:
             continue
 
-        ranked.append({
-            "title": title,
-            "url": item.get("deep_link") or item.get("url"),
-            "source": source,
-            "summary": content,
-            "score": score,
-            "intent": _bucket_intent(score),
-            "reasons": reasons,
-            "captured_at": _now_iso(),
-        })
+        ranked.append(_lead_payload_from_source(item, score=score, reasons=reasons))
 
     ranked.sort(key=lambda row: row["score"], reverse=True)
     return ranked, source_counts, errors
+
+
+def _read_generation_request() -> tuple[list[str], int, int, int, int | None]:
+    payload = request.get_json(silent=True) or {}
+    query_keywords = request.args.get("keywords")
+    raw_keywords = payload.get("keywords") if payload else query_keywords
+    keywords = _normalize_keywords(raw_keywords)
+
+    # POST body takes precedence over query args when provided.
+    if payload.get("keywords") is not None:
+        keywords = _normalize_keywords(payload.get("keywords"))
+
+    per_source_limit = _parse_limit(
+        payload.get("per_source_limit") if payload.get("per_source_limit") is not None else request.args.get("per_source_limit"),
+        max_value=25,
+    ) or 5
+    max_queries = _parse_limit(
+        payload.get("max_queries") if payload.get("max_queries") is not None else request.args.get("max_queries"),
+        max_value=50,
+    ) or 8
+    min_score = _parse_limit(
+        payload.get("min_score") if payload.get("min_score") is not None else request.args.get("min_score"),
+        max_value=100,
+    ) or 55
+
+    limit_raw = payload.get("limit") if payload.get("limit") is not None else request.args.get("limit")
+    limit = _parse_limit(limit_raw)
+
+    return keywords, per_source_limit, max_queries, min_score, limit
 
 
 def create_app() -> Flask:
@@ -176,26 +211,10 @@ def create_app() -> Flask:
 
     @app.route("/api/getLeads", methods=["GET", "POST"])
     def get_leads():
-        payload = request.get_json(silent=True) if request.method == "POST" else None
-        limit = _parse_limit((payload or {}).get("limit"))
-
-        if request.method == "POST" and (payload or {}).get("limit") is not None and limit is None:
-            return _error("`limit` must be a positive integer.")
-
-        leads = [deepcopy(DEFAULT_LEAD) for _ in range(limit or 1)]
-        return _success({"leads": leads, "count": len(leads)})
-
-    @app.post("/api/generateLeads")
-    def generate_leads():
-        payload = request.get_json(silent=True) or {}
-        keywords = _normalize_keywords(payload.get("keywords"))
+        keywords, per_source_limit, max_queries, min_score, limit = _read_generation_request()
 
         if not keywords:
-            return _error("`keywords` must be a non-empty string array.")
-
-        per_source_limit = _parse_limit(payload.get("per_source_limit"), max_value=25) or 5
-        max_queries = _parse_limit(payload.get("max_queries"), max_value=50) or 8
-        min_score = _parse_limit(payload.get("min_score"), max_value=100) or 55
+            return _error("`keywords` must be a non-empty string array or comma-separated query string.")
 
         leads, source_counts, errors = generate_ranked_leads(
             keywords=keywords,
@@ -204,12 +223,38 @@ def create_app() -> Flask:
             min_score=min_score,
         )
 
+        if limit is not None:
+            leads = leads[:limit]
+
         return _success({
             "keywords": keywords,
             "count": len(leads),
             "source_counts": source_counts,
             "errors": errors[:20],
-            "leads": leads[:100],
+            "leads": leads,
+        })
+
+    @app.post("/api/generateLeads")
+    def generate_leads():
+        keywords, per_source_limit, max_queries, min_score, limit = _read_generation_request()
+
+        if not keywords:
+            return _error("`keywords` must be a non-empty string array or comma-separated query string.")
+
+        leads, source_counts, errors = generate_ranked_leads(
+            keywords=keywords,
+            per_source_limit=per_source_limit,
+            max_queries=max_queries,
+            min_score=min_score,
+        )
+
+        capped = leads[: min(100, limit or 100)]
+        return _success({
+            "keywords": keywords,
+            "count": len(capped),
+            "source_counts": source_counts,
+            "errors": errors[:20],
+            "leads": capped,
         })
 
     @app.post("/api/analyzeLead")

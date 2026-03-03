@@ -26,25 +26,56 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertIn("Hello from backend", payload["message"])
 
-    def test_get_leads_get_route(self):
-        response = self.client.get("/api/getLeads")
+    @patch("app.fetch_indiehackers_rss")
+    @patch("app.fetch_hn")
+    @patch("app.fetch_reddit")
+    def test_get_leads_get_route(self, mock_reddit, mock_hn, mock_ih):
+        mock_reddit.return_value = [{
+            "title": "Looking for lead scraping help",
+            "url": "https://reddit.com/a",
+            "deep_link": "https://reddit.com/a",
+            "snippet": "Need a fast lead source",
+            "source": "reddit",
+            "created_at_iso": "2025-01-01T00:00:00+00:00",
+            "meta": {"author": "seller1"},
+        }]
+        mock_hn.return_value = []
+        mock_ih.return_value = []
+
+        response = self.client.get("/api/getLeads?keywords=lead%20gen,sales&max_queries=1&min_score=1")
         payload = response.get_json()
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["status"], "success")
-        self.assertGreaterEqual(len(payload["leads"]), 1)
-        self.assertEqual(payload["count"], len(payload["leads"]))
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertIn("post_url", payload["leads"][0])
+        self.assertEqual(payload["leads"][0]["post_url"], "https://reddit.com/a")
 
-    def test_get_leads_post_with_limit(self):
-        response = self.client.post("/api/getLeads", json={"limit": 3})
+    @patch("app.fetch_indiehackers_rss")
+    @patch("app.fetch_hn")
+    @patch("app.fetch_reddit")
+    def test_get_leads_post_with_limit(self, mock_reddit, mock_hn, mock_ih):
+        mock_reddit.return_value = [{
+            "title": "Need better outbound",
+            "url": "https://reddit.com/b",
+            "deep_link": "https://reddit.com/b",
+            "snippet": "Need outbound and pricing",
+            "source": "reddit",
+            "created_at_iso": "2025-01-01T00:00:00+00:00",
+            "meta": {},
+        }]
+        mock_hn.return_value = []
+        mock_ih.return_value = []
+
+        response = self.client.post("/api/getLeads", json={"keywords": ["outbound"], "limit": 1, "max_queries": 1, "min_score": 1})
         payload = response.get_json()
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["status"], "success")
-        self.assertEqual(payload["count"], 3)
+        self.assertEqual(payload["count"], 1)
 
-    def test_get_leads_post_with_bad_limit(self):
-        response = self.client.post("/api/getLeads", json={"limit": 0})
+    def test_get_leads_with_bad_keywords(self):
+        response = self.client.post("/api/getLeads", json={"keywords": []})
         payload = response.get_json()
 
         self.assertEqual(response.status_code, 400)
@@ -77,6 +108,7 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertGreaterEqual(payload["count"], 1)
         self.assertIn("source_counts", payload)
         self.assertEqual(payload["leads"][0]["source"], "reddit")
+        self.assertTrue(payload["leads"][0]["post_url"].startswith("https://"))
 
     def test_generate_leads_requires_keywords(self):
         response = self.client.post("/api/generateLeads", json={"keywords": []})
