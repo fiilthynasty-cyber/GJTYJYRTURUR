@@ -2,10 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import os
 
-# Create Flask app
 app = Flask(__name__)
-
-# Enable CORS (allows frontend to connect)
 CORS(app)
 
 # -------------------
@@ -13,7 +10,10 @@ CORS(app)
 # -------------------
 @app.route("/")
 def home():
-    return "Backend is live!"
+    return jsonify({
+        "status": "success",
+        "message": "Backend is live!"
+    })
 
 # -------------------
 # TEST API ROUTE
@@ -26,24 +26,10 @@ def hello():
     })
 
 # -------------------
-# EXAMPLE POST ROUTE
+# GET LEADS (ALLOW GET + POST)
 # -------------------
-@app.route("/api/data", methods=["POST"])
-def receive_data():
-    data = request.json
-
-    return jsonify({
-        "status": "received",
-        "you_sent": data
-    })
-
-# -------------------
-# GET LEADS
-# -------------------
-@app.route("/api/getLeads", methods=["POST"])
+@app.route("/api/getLeads", methods=["GET", "POST"])
 def get_leads():
-    data = request.json
-
     return jsonify({
         "status": "success",
         "leads": [
@@ -62,8 +48,6 @@ def get_leads():
 # -------------------
 @app.route("/api/analyzeLead", methods=["POST"])
 def analyze_lead():
-    data = request.json
-
     return jsonify({
         "status": "success",
         "analysis": {
@@ -78,8 +62,6 @@ def analyze_lead():
 # -------------------
 @app.route("/api/updateLead", methods=["POST"])
 def update_lead():
-    data = request.json
-
     return jsonify({
         "status": "success",
         "message": "Lead updated successfully"
