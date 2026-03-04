@@ -9,3 +9,7 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# ignore embedded repo folder
+GJTYJYRTURUR-main/
+
