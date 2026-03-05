@@ -1,22 +1,29 @@
 import os
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.routes import auth, leads, payments, pipeline, analytics, audit, outreach_routes
 from backend.utils.db import create_tables
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    create_tables()
+    yield
+    # Shutdown logic (if needed) goes here
+
+
 app = FastAPI(
     title="AI Lead Vacuum API",
     version="1.0.0",
     docs_url="/docs" if os.getenv("ENABLE_DOCS", "true").lower() == "true" else None,
     redoc_url=None,
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    create_tables()
 
 app.add_middleware(
     CORSMiddleware,

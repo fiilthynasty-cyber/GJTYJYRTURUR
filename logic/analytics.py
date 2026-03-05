@@ -96,7 +96,7 @@ def intent_breakdown(leads: List[Dict[str, Any]]) -> Dict[str, int]:
     return {"high": counter["high"], "medium": counter["medium"], "low": counter["low"]}
 
 
-def top_pain_points(leads: List[Dict, Any], top_n: int = 10) -> List[Dict[str, Any]]:
+def top_pain_points(leads: List[Dict[str, Any]], top_n: int = 10) -> List[Dict[str, Any]]:
     """
     Aggregates pain-point phrases across all lead reasons.
     """
